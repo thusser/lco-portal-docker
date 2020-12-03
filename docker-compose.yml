@@ -1,0 +1,96 @@
+version: "3"
+
+services:
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - ${PWD}/docker-entrypoint-initdb.sh:/docker-entrypoint-initdb.d/initdb.sh
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+ 
+  redis:
+    image: redis
+    restart: always
+    
+  configdb:
+    image: configdb
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=configdb
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - SECRET_KEY=CHANGEME
+    volumes:
+      - static1:/static
+    depends_on:
+      - postgres
+    restart: always
+    command: bash -c "./manage.py collectstatic --no-input && ./manage.py migrate && gunicorn --bind=0.0.0.0:8000 --worker-class=gevent --workers=4 --access-logfile=- --error-logfile=- configdb.wsgi:application"
+
+  portal:
+    image: observation-portal
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=observation_portal
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - SECRET_KEY=CHANGEME
+      - CONFIGDB_URL=http://configdb:8000
+    volumes:
+      - static2:/static
+    depends_on:
+      - postgres
+      - configdb
+      - redis
+    restart: always
+    command: bash -c "./manage.py collectstatic --no-input && ./manage.py migrate && gunicorn --bind=0.0.0.0:8000 --worker-class=gevent --workers=4 --access-logfile=- --error-logfile=- observation_portal.wsgi"
+    
+  nginx:
+    image: nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - static1:/static/configdb/static
+      - static2:/static/portal/static
+    ports:
+      - 8000:80
+      - 8001:81
+    restart: always    
+
+  dramatiq:
+    image: observation-portal
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=observation_portal
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - SECRET_KEY=CHANGEME
+      - CONFIGDB_URL=http://configdb:8000
+    entrypoint: python /observation-portal/manage.py rundramatiq --processes 2 --threads 2
+    depends_on:
+      - postgres
+      - configdb
+      - redis
+    restart: always
+
+  scheduler:
+    image: observation-portal
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=observation_portal
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - SECRET_KEY=CHANGEME
+      - CONFIGDB_URL=http://configdb:8000
+    entrypoint: python /observation-portal/manage.py runscript observation_portal.task_scheduler
+    depends_on:
+      - postgres
+      - configdb
+      - redis
+    restart: always
+
+volumes:
+  pgdata:
+  static1:
+  static2:
